@@ -1,0 +1,8 @@
+# Gabungkan PDF (combine.py)
+#
+# Engine UTAMA: Ghostscript (perlu binary gs terinstall di sistem).
+# pypdf bersifat OPSIONAL — hanya fallback + validasi jumlah halaman:
+pypdf>=4.0
+
+# Opsional: laporan Excel (--xlsx) — CSV tetap jalan tanpa ini:
+openpyxl>=3.1
