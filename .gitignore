@@ -6,6 +6,8 @@ combine.log
 combine_result.csv
 combine_missing.csv
 combine_result.xlsx
+combine_check.csv
+combine_check_cache.json
 
 # Data pasien/input sumber — JANGAN commit
 input/

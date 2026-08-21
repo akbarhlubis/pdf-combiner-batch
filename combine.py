@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import glob
 import hashlib
+import json
 import logging
 import os
 import re
@@ -197,6 +198,89 @@ def merge_any(paths: list[Path], out_path: Path, engine: str) -> int:
         "Tidak ada engine tersedia: Ghostscript tidak ditemukan dan pypdf "
         "belum terpasang. Install salah satunya."
     )
+
+
+# ---------------------------------------------------------------- verifikasi nama file vs NOSEP isi
+SEP_RE = re.compile(r"\d{4}[A-Za-z]\d{7}[A-Za-z]\d{6}")
+CHECK_CACHE_FILE = PROJECT_DIR / "combine_check_cache.json"
+
+
+def _load_check_cache() -> dict:
+    try:
+        with open(CHECK_CACHE_FILE, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_check_cache(cache: dict) -> None:
+    with open(CHECK_CACHE_FILE, "w", encoding="utf-8") as fh:
+        json.dump(cache, fh, indent=1)
+
+
+def _verify_one(p: Path, root: Path) -> dict:
+    """Cek nama file vs SEP yang ada di isi PDF.
+
+    Status: ok | mismatch | no_sep (teks ada tapi tanpa pola SEP) |
+    no_text (scan/tidak bisa dibaca).
+    """
+    rel = os.path.relpath(p, root)
+    name_sep = p.stem
+    try:
+        text = "".join((pg.extract_text() or "") for pg in PdfReader(str(p)).pages)
+    except Exception:
+        return {"file": rel, "nama_sep": name_sep, "isi_sep": "",
+                "status": "no_text", "keterangan": "tidak bisa dibaca"}
+    if not text.strip():
+        return {"file": rel, "nama_sep": name_sep, "isi_sep": "",
+                "status": "no_text", "keterangan": "PDF scan tanpa lapisan teks"}
+    found = {m.upper() for m in SEP_RE.findall(text)}
+    if not found:
+        return {"file": rel, "nama_sep": name_sep, "isi_sep": "",
+                "status": "no_sep", "keterangan": "tidak ada pola SEP di isi"}
+    if name_sep.upper() in found:
+        return {"file": rel, "nama_sep": name_sep, "isi_sep": name_sep.upper(),
+                "status": "ok", "keterangan": ""}
+    return {"file": rel, "nama_sep": name_sep, "isi_sep": ", ".join(sorted(found)[:6]),
+            "status": "mismatch", "keterangan": "nama file != SEP di isi"}
+
+
+def verify_names(root: Path, force_verify: bool) -> tuple[list[dict], dict]:
+    """Verifikasi SEMUA PDF di root; pakai cache (path,size,mtime) bila ada."""
+    files = find_pdfs(root)
+    cache = {} if force_verify else _load_check_cache()
+    rows: list[dict] = []
+    counts = {"ok": 0, "mismatch": 0, "no_sep": 0, "no_text": 0, "cached": 0}
+    for p in files:
+        st = p.stat()
+        key = str(p)
+        entry = cache.get(key)
+        if (not force_verify and entry
+                and entry.get("size") == st.st_size
+                and entry.get("mtime") == st.st_mtime):
+            row = entry["row"]
+            counts["cached"] += 1
+        else:
+            row = _verify_one(p, root)
+            cache[key] = {"size": st.st_size, "mtime": st.st_mtime, "row": row}
+        rows.append(row)
+        if row["status"] in counts:
+            counts[row["status"]] += 1
+    _save_check_cache(cache)
+    counts["total"] = len(files)
+    return rows, counts
+
+
+def _write_check_csv(rows: list[dict]) -> None:
+    import csv
+    out = PROJECT_DIR / "combine_check.csv"
+    fieldnames = ["file", "nama_sep", "isi_sep", "status", "keterangan"]
+    labels = {"file": "File", "nama_sep": "Nama File (SEP)",
+              "isi_sep": "SEP di Isi", "status": "Status", "keterangan": "Keterangan"}
+    with open(out, "w", encoding="utf-8-sig", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writerow({k: labels[k] for k in fieldnames})
+        writer.writerows(rows)
 
 
 # ---------------------------------------------------------------- hasil
@@ -371,7 +455,35 @@ def _write_xlsx(rows: list[dict], missing_rows: list[dict],
     log.info("Laporan Excel: %s", out)
 
 
-def process_group(name: str, paths: list[Path], out_dir: Path,
+def _dedupe_per_source(paths: list[Path], root: Path) -> tuple[list[Path], list[str]]:
+    """Bila dalam SATU folder sumber ada beberapa salinan nama sama:
+    identik -> sisakan 1; beda isi -> pilih versi terbaru (mtime).
+    Return (path terpilih, catatan log)."""
+    per_source: dict[str, list[Path]] = {}
+    for p in paths:
+        parts = p.relative_to(root).parts
+        src = parts[0] if len(parts) > 1 else "(root)"
+        per_source.setdefault(src, []).append(p)
+    chosen: list[Path] = []
+    notes: list[str] = []
+    for src in sorted(per_source):
+        ps = per_source[src]
+        if len(ps) == 1:
+            chosen.append(ps[0])
+            continue
+        if len({sha256(p) for p in ps}) == 1:
+            chosen.append(ps[0])
+            notes.append(f"duplikat identik di {src} — dipakai 1 salinan")
+        else:
+            newest = max(ps, key=lambda p: p.stat().st_mtime)
+            chosen.append(newest)
+            ts = datetime.fromtimestamp(newest.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            notes.append(f"revisi di {src}: {len(ps)} salinan beda isi — "
+                         f"dipakai versi terbaru (mtime {ts})")
+    return chosen, notes
+
+
+def process_group(name: str, paths: list[Path], root: Path, out_dir: Path,
                   only_duplicates: bool, force: bool, engine: str) -> dict:
     orig_name = paths[0].name  # pertahankan case asli
     stem = Path(orig_name).stem
@@ -382,24 +494,32 @@ def process_group(name: str, paths: list[Path], out_dir: Path,
         return {"name": orig_name, "status": "exists_skipped", "pages": 0,
                 "detail": "output sudah ada (pakai --force untuk menimpa)"}
 
+    paths, notes = _dedupe_per_source(paths, root)
+
     if len(paths) == 1:
         if only_duplicates:
             return {"name": orig_name, "status": "skipped", "pages": 0,
                     "detail": "nama unik (default: hanya duplikat)"}
         shutil.copy2(paths[0], out_file)
         return {"name": orig_name, "status": "copied", "pages": page_count(out_file),
-                "detail": ""}
+                "detail": "; ".join(notes)}
 
     ordered = sorted(paths, key=lambda p: _nat_key(str(p)))
     if len({sha256(p) for p in paths}) == 1:
+        detail = f"file identik dari {len(paths)} folder"
+        if notes:
+            detail += " | " + "; ".join(notes)
         shutil.copy2(ordered[0], out_file)
         return {"name": orig_name, "status": "identical", "pages": page_count(out_file),
-                "detail": f"file identik dari {len(paths)} folder"}
+                "detail": detail}
 
     try:
         pages = merge_any(ordered, out_file, engine)
+        detail = " + ".join(p.parent.name for p in ordered)
+        if notes:
+            detail += " | " + "; ".join(notes)
         return {"name": orig_name, "status": "merged", "pages": pages,
-                "detail": " + ".join(p.parent.name for p in ordered)}
+                "detail": detail}
     except Exception as exc:
         return {"name": orig_name, "status": "failed", "pages": 0, "detail": f"{exc}"}
 
@@ -423,7 +543,57 @@ def main(argv=None) -> int:
     p.add_argument("--dry-run", action="store_true", help="Rencana saja, tanpa menulis")
     p.add_argument("--xlsx", action="store_true",
                    help="Tulis juga laporan Excel (butuh openpyxl)")
+    p.add_argument("--check", action="store_true",
+                   help="Cek nama file vs NOSEP di isi PDF (audit, tanpa merge)")
+    p.add_argument("--safe", action="store_true",
+                   help="Verifikasi nama file vs NOSEP lalu merge; file mismatch dilewati")
+    p.add_argument("--force-verify", action="store_true",
+                   help="Abaikan cache verifikasi (full re-check)")
     args = p.parse_args(argv)
+
+    blocked: set[str] = set()
+    if args.check:
+        if not HAS_PYPDF:
+            log.error("Verifikasi nama file butuh pypdf (pip install pypdf).")
+            return 2
+        root = Path(args.input)
+        if not root.is_dir():
+            log.error("Folder input tidak ditemukan: %s", root)
+            return 2
+        log.info("CHECK MODE — verifikasi nama file vs NOSEP di isi (tanpa merge)")
+        rows, counts = verify_names(root, args.force_verify)
+        _write_check_csv(rows)
+        log.info("Ringkasan: total=%s ok=%s mismatch=%s no_sep=%s no_text=%s "
+                 "(dari cache=%s)", counts["total"], counts["ok"],
+                 counts["mismatch"], counts["no_sep"], counts["no_text"],
+                 counts["cached"])
+        if counts["mismatch"]:
+            log.warning("ADA %s file dengan nama tidak sesuai isi! Perbaiki nama "
+                        "file-nya (lihat combine_check.csv).", counts["mismatch"])
+        else:
+            log.info("Semua nama file cocok dengan SEP di isi. OK.")
+        return 0
+    if args.safe:
+        if not HAS_PYPDF:
+            log.error("Mode --safe butuh pypdf (pip install pypdf).")
+            return 2
+        root = Path(args.input)
+        if not root.is_dir():
+            log.error("Folder input tidak ditemukan: %s", root)
+            return 2
+        log.info("SAFE MODE — verifikasi nama file vs NOSEP, file mismatch dilewati")
+        rows, counts = verify_names(root, args.force_verify)
+        _write_check_csv(rows)
+        log.info("Cek: total=%s ok=%s mismatch=%s no_sep=%s no_text=%s (cache=%s)",
+                 counts["total"], counts["ok"], counts["mismatch"],
+                 counts["no_sep"], counts["no_text"], counts["cached"])
+        blocked = {str((root / Path(r["file"])).resolve()).lower()
+                   for r in rows if r["status"] == "mismatch"}
+        if blocked:
+            log.warning("SAFE MODE: %s file mismatch DILEWATI dari merge "
+                        "(lihat combine_check.csv).", len(blocked))
+        else:
+            log.info("Semua nama file cocok dengan isi. Lanjut merge normal.")
 
     log.info("=" * 60)
     log.info("Gabungkan PDF — dimulai (engine=%s)", args.engine)
@@ -446,6 +616,14 @@ def main(argv=None) -> int:
     out_dir = Path(args.output)
 
     files = find_pdfs(root)
+    if blocked:
+        n_before = len(files)
+        files = [p for p in files if str(p.resolve()).lower() not in blocked]
+        log.warning("Safe mode: %s file dilewati dari merge (%s -> %s file diproses).",
+                    n_before - len(files), n_before, len(files))
+        if not files:
+            log.error("Semua file dilewati — tidak ada yang bisa diproses.")
+            return 2
     if not files:
         log.error("Tidak ada PDF di %s", root)
         return 2
@@ -469,7 +647,7 @@ def main(argv=None) -> int:
     merged = copied = failed = 0
     only_dup = not args.include_unique
     for name in sorted(groups):
-        r = process_group(name, groups[name], out_dir,
+        r = process_group(name, groups[name], root, out_dir,
                           only_dup, args.force, args.engine)
         rows.append(r)
         if r["status"] == "merged":

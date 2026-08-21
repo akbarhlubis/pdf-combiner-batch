@@ -27,6 +27,8 @@ python combine.py --include-unique # proses juga nama yang hanya 1 folder
 python combine.py --output "D:\gabungan"
 python combine.py --engine gs      # paksa Ghostscript
 python combine.py --xlsx           # + laporan Excel (butuh openpyxl)
+python combine.py --check          # audit: nama file vs NOSEP di isi PDF
+python combine.py --safe           # cek lalu merge; file mismatch dilewati
 ```
 
 ## Perilaku
@@ -40,6 +42,13 @@ python combine.py --xlsx           # + laporan Excel (butuh openpyxl)
 - **Laporan missing**: `combine_missing.csv` mencatat nama file yang ada di
   satu folder tapi tidak di folder lain (atau duplikat dalam folder) —
   misal folder A & B sama-sama 285 file tapi hanya 281 yang cocok
+- **Cek nama vs isi**: `python combine.py --check` memverifikasi nama file
+  cocok dengan NOSEP di dalam PDF → `combine_check.csv` (deteksi salah
+  nama/manusia). File `mismatch` tidak di-rename otomatis; perbaiki manual.
+- **Mode aman**: `python combine.py --safe` = cek lalu merge — file yang
+  namanya tidak cocok isi **dilewati** (isi pasien A tidak akan masuk ke
+  berkas B); salinan revisi dalam satu folder **memakai versi terbaru**
+  (by waktu file), tidak menggabung semua versi.
 
 ## Engine gabung
 
