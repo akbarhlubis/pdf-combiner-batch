@@ -198,20 +198,6 @@ class CombineWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setStyleSheet("""
-        QWidget { font-family: 'Segoe UI'; font-size: 10pt; color: #17324d; }
-        QMainWindow { background: #f4f7f8; }
-        QLabel#title { font-size: 20pt; font-weight: 700; color: #0b5269; }
-        QLabel#section { font-weight: 700; color: #0b5269; margin-top: 8px; }
-        QGroupBox { background: #ffffff; border: 1px solid #cbd8dc; border-radius: 6px; margin-top: 10px; padding: 10px; font-weight: 700; }
-        QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
-        QPushButton { background: #0b6b7f; color: white; border: 0; border-radius: 4px; padding: 7px 12px; font-weight: 600; }
-        QPushButton:hover { background: #09586a; }
-        QPushButton:disabled { background: #a7b8bd; }
-        QProgressBar { border: 1px solid #b7c8cd; border-radius: 4px; text-align: center; background: #ffffff; }
-        QProgressBar::chunk { background: #168c8b; }
-        QPlainTextEdit { background: #ffffff; border: 1px solid #cbd8dc; border-radius: 4px; }
-    """)
     window = CombineWindow()
     window.show()
     return app.exec()
