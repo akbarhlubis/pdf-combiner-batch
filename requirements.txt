@@ -6,3 +6,6 @@ pypdf>=4.0
 
 # Opsional: laporan Excel (--xlsx) — CSV tetap jalan tanpa ini:
 openpyxl>=3.1
+
+# Mode GUI desktop (combine_gui.py)
+PySide6>=6.11

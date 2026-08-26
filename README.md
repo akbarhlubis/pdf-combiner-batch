@@ -16,10 +16,88 @@ pdf-combiner-batch/
     result/             # hasil gabungan (otomatis dibuat)
 ```
 
-## Cara pakai
+## Instalasi Windows
 
-```bash
-pip install -r requirements.txt
+Kebutuhan:
+
+```text
+Windows 10/11
+Python 3.10 atau lebih baru (Python 3.13 sudah diuji)
+Ghostscript Windows (disarankan)
+```
+
+Package Python yang diinstal dari `requirements.txt`:
+
+```text
+pypdf       - membaca, validasi, dan fallback PDF
+openpyxl    - membuat laporan Excel (.xlsx)
+PySide6     - menjalankan GUI desktop
+```
+
+### 1. Pastikan Python tersedia
+
+```powershell
+py --version
+```
+
+Jika perintah `py` tidak tersedia, gunakan path Python yang dipasang IT,
+misalnya `D:\laragon\bin\python\python-3.13\python.exe`.
+
+### 2. Buat environment dan instal package
+
+```powershell
+cd D:\Projects\automation-tools\pdf-combiner-batch
+
+py -3.13 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Jika menggunakan Python Laragon:
+
+```powershell
+D:\laragon\bin\python\python-3.13\python.exe -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+### 3. Pasang dan cek Ghostscript
+
+```powershell
+where gswin64c
+```
+
+Hasil normal menyerupai:
+
+```text
+C:\Program Files\gs\gs10.xx.x\bin\gswin64c.exe
+```
+
+Tanpa Ghostscript aplikasi masih dapat memakai `pypdf`, tetapi hasil dapat
+lebih besar dan beberapa PDF tidak biasa lebih berisiko gagal.
+
+### 4. Verifikasi package Python
+
+```powershell
+.\.venv\Scripts\python.exe -c "import pypdf, openpyxl, PySide6; print('Instalasi OK')"
+```
+
+## Menjalankan GUI
+
+Setelah instalasi selesai, jalankan dengan double-click:
+
+```text
+Jalankan-Combiner-GUI.bat
+```
+
+Atau dari PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe combine_gui.py
+```
+
+## Cara pakai CLI
+
+```powershell
 
 python combine.py                  # input/ -> result/ (hanya duplikat)
 python combine.py --dry-run        # lihat rencana tanpa menulis file

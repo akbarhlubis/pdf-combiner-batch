@@ -1,6 +1,7 @@
 # Artefak hasil
 result/
 __pycache__/
+.venv/
 *.pyc
 combine.log
 combine_result.csv
@@ -8,6 +9,7 @@ combine_missing.csv
 combine_result.xlsx
 combine_check.csv
 combine_check_cache.json
+combine_missing.xlsx
 
 # Data pasien/input sumber — JANGAN commit
 input/

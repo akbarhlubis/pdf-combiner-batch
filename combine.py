@@ -41,6 +41,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 PROJECT_DIR = Path(__file__).resolve().parent
 
@@ -55,13 +56,14 @@ COMBINE_ENGINE = os.getenv("EKLAIM_COMBINE_ENGINE", "auto").strip().lower()
 GS_EXECUTABLE = os.getenv("EKLAIM_GS_EXECUTABLE", "")
 
 # ---------------------------------------------------------------- logging
-def _setup_logging() -> logging.Logger:
+def _setup_logging(log_dir: Path = PROJECT_DIR) -> logging.Logger:
     logger = logging.getLogger("combine")
     logger.setLevel(logging.DEBUG)
     for h in list(logger.handlers):
         logger.removeHandler(h)
     fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(message)s", "%H:%M:%S")
-    fh = logging.FileHandler(PROJECT_DIR / "combine.log", encoding="utf-8")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    fh = logging.FileHandler(log_dir / "combine.log", encoding="utf-8")
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(fmt)
     ch = logging.StreamHandler(sys.stdout)
@@ -245,15 +247,18 @@ def _verify_one(p: Path, root: Path) -> dict:
             "status": "mismatch", "keterangan": "nama file != SEP di isi"}
 
 
-def verify_names(root: Path, force_verify: bool) -> tuple[list[dict], dict]:
+def verify_names(root: Path, force_verify: bool,
+                 progress_callback: Callable[[str, int, int], None] | None = None) -> tuple[list[dict], dict]:
     """Verifikasi SEMUA PDF di root; pakai cache (path,size,mtime) bila ada."""
     files = find_pdfs(root)
     cache = {} if force_verify else _load_check_cache()
     rows: list[dict] = []
     counts = {"ok": 0, "mismatch": 0, "no_sep": 0, "no_text": 0, "cached": 0}
-    for p in files:
+    for index, p in enumerate(files, start=1):
+        if progress_callback:
+            progress_callback(f"Memeriksa nama dan SEP {index}/{len(files)}: {p.name}", index - 1, len(files))
         st = p.stat()
-        key = str(p)
+        key = str(p.resolve())  # normalisasi path: relatif/absolut konsisten di cache
         entry = cache.get(key)
         if (not force_verify and entry
                 and entry.get("size") == st.st_size
@@ -268,12 +273,14 @@ def verify_names(root: Path, force_verify: bool) -> tuple[list[dict], dict]:
             counts[row["status"]] += 1
     _save_check_cache(cache)
     counts["total"] = len(files)
+    if progress_callback:
+        progress_callback("Pemeriksaan SEP selesai", len(files), len(files))
     return rows, counts
 
 
-def _write_check_csv(rows: list[dict]) -> None:
+def _write_check_csv(rows: list[dict], report_dir: Path) -> None:
     import csv
-    out = PROJECT_DIR / "combine_check.csv"
+    out = report_dir / "combine_check.csv"
     fieldnames = ["file", "nama_sep", "isi_sep", "status", "keterangan"]
     labels = {"file": "File", "nama_sep": "Nama File (SEP)",
               "isi_sep": "SEP di Isi", "status": "Status", "keterangan": "Keterangan"}
@@ -299,9 +306,9 @@ _RESULT_HEADER_LABEL = {
 }
 
 
-def _write_result(rows: list[dict]) -> None:
+def _write_result(rows: list[dict], report_dir: Path) -> None:
     import csv
-    out = PROJECT_DIR / "combine_result.csv"
+    out = report_dir / "combine_result.csv"
     with open(out, "w", encoding="utf-8-sig", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=_RESULT_HEADERS)
         writer.writerow({k: _RESULT_HEADER_LABEL[k] for k in _RESULT_HEADERS})
@@ -371,9 +378,9 @@ def missing_report(root: Path) -> tuple[list[dict], dict]:
     return rows, ringkasan
 
 
-def _write_missing(rows: list[dict], sources: list[str]) -> None:
+def _write_missing(rows: list[dict], sources: list[str], report_dir: Path) -> None:
     import csv
-    out = PROJECT_DIR / "combine_missing.csv"
+    out = report_dir / "combine_missing.csv"
     fieldnames = ["nosep", "nama_file"] + sources + ["keterangan"]
     labels = {"nosep": "NOSEP", "nama_file": "Nama File", "keterangan": "Keterangan"}
     with open(out, "w", encoding="utf-8-sig", newline="") as fh:
@@ -390,7 +397,7 @@ def _autosize(ws, cap: int = 40) -> None:
 
 
 def _write_xlsx(rows: list[dict], missing_rows: list[dict],
-                sources: list[str], ringkasan: dict) -> None:
+                sources: list[str], ringkasan: dict, report_dir: Path) -> None:
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Font, PatternFill
@@ -450,7 +457,7 @@ def _write_xlsx(rows: list[dict], missing_rows: list[dict],
         ws3.auto_filter.ref = ws3.dimensions
         _autosize(ws3)
 
-    out = PROJECT_DIR / "combine_result.xlsx"
+    out = report_dir / "combine_result.xlsx"
     wb.save(out)
     log.info("Laporan Excel: %s", out)
 
@@ -525,7 +532,7 @@ def process_group(name: str, paths: list[Path], root: Path, out_dir: Path,
 
 
 # ---------------------------------------------------------------- main
-def main(argv=None) -> int:
+def main(argv=None, progress_callback: Callable[[str, int, int], None] | None = None) -> int:
     p = argparse.ArgumentParser(
         description="Gabungkan PDF bernama sama dari subfolder berbeda (read-only pada sumber).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -538,7 +545,7 @@ def main(argv=None) -> int:
                    help="Proses juga nama yang hanya muncul di 1 folder "
                         "(default: hanya nama duplikat)")
     p.add_argument("--engine", choices=["auto", "pypdf", "gs"], default=COMBINE_ENGINE,
-                   help="Engine gabung: auto = pypdf lalu fallback Ghostscript")
+                   help="Engine gabung: auto = Ghostscript lalu fallback pypdf")
     p.add_argument("--force", action="store_true", help="Timpa output yang sudah ada")
     p.add_argument("--dry-run", action="store_true", help="Rencana saja, tanpa menulis")
     p.add_argument("--xlsx", action="store_true",
@@ -550,6 +557,9 @@ def main(argv=None) -> int:
     p.add_argument("--force-verify", action="store_true",
                    help="Abaikan cache verifikasi (full re-check)")
     args = p.parse_args(argv)
+    report_dir = Path(args.output)
+    global log
+    log = _setup_logging(report_dir)
 
     blocked: set[str] = set()
     if args.check:
@@ -561,8 +571,8 @@ def main(argv=None) -> int:
             log.error("Folder input tidak ditemukan: %s", root)
             return 2
         log.info("CHECK MODE — verifikasi nama file vs NOSEP di isi (tanpa merge)")
-        rows, counts = verify_names(root, args.force_verify)
-        _write_check_csv(rows)
+        rows, counts = verify_names(root, args.force_verify, progress_callback)
+        _write_check_csv(rows, report_dir)
         log.info("Ringkasan: total=%s ok=%s mismatch=%s no_sep=%s no_text=%s "
                  "(dari cache=%s)", counts["total"], counts["ok"],
                  counts["mismatch"], counts["no_sep"], counts["no_text"],
@@ -582,8 +592,8 @@ def main(argv=None) -> int:
             log.error("Folder input tidak ditemukan: %s", root)
             return 2
         log.info("SAFE MODE — verifikasi nama file vs NOSEP, file mismatch dilewati")
-        rows, counts = verify_names(root, args.force_verify)
-        _write_check_csv(rows)
+        rows, counts = verify_names(root, args.force_verify, progress_callback)
+        _write_check_csv(rows, report_dir)
         log.info("Cek: total=%s ok=%s mismatch=%s no_sep=%s no_text=%s (cache=%s)",
                  counts["total"], counts["ok"], counts["mismatch"],
                  counts["no_sep"], counts["no_text"], counts["cached"])
@@ -646,7 +656,10 @@ def main(argv=None) -> int:
     rows = []
     merged = copied = failed = 0
     only_dup = not args.include_unique
-    for name in sorted(groups):
+    total_groups = len(groups)
+    for index, name in enumerate(sorted(groups), start=1):
+        if progress_callback:
+            progress_callback(f"Menggabungkan {index}/{total_groups}: {Path(name).stem}", index - 1, total_groups)
         r = process_group(name, groups[name], root, out_dir,
                           only_dup, args.force, args.engine)
         rows.append(r)
@@ -659,17 +672,19 @@ def main(argv=None) -> int:
         log.info("%-16s %-14s %4s hal  %s", r["status"], r["name"][:32],
                  r["pages"] or "-", r["detail"])
 
-    _write_result(rows)
+    _write_result(rows, report_dir)
     missing_rows, ringkasan = missing_report(root)
     if ringkasan:
-        _write_missing(missing_rows, ringkasan["sumber"])
+        _write_missing(missing_rows, ringkasan["sumber"], report_dir)
         log.info("Missing report: %s nama unik (%s lengkap, %s bermasalah) — "
                  "combine_missing.csv", ringkasan["nama_union"],
                  ringkasan["lengkap"], ringkasan["bermasalah"])
     if args.xlsx:
-        _write_xlsx(rows, missing_rows, ringkasan.get("sumber", []), ringkasan)
+        _write_xlsx(rows, missing_rows, ringkasan.get("sumber", []), ringkasan, report_dir)
     log.info("Selesai. merged=%s copied/identical=%s failed=%s "
              "(ringkasan: combine_result.csv)", merged, copied, failed)
+    if progress_callback:
+        progress_callback("Penggabungan selesai", total_groups, total_groups)
     return 0
 
 
