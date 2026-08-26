@@ -34,7 +34,18 @@ openpyxl    - membuat laporan Excel (.xlsx)
 PySide6     - menjalankan GUI desktop
 ```
 
-### 1. Pastikan Python tersedia
+### 1. Buka PowerShell di folder aplikasi
+
+1. Buka folder `pdf-combiner-batch` di File Explorer.
+2. Klik area kosong di dalam folder sambil menekan `Shift`, lalu klik kanan.
+3. Pilih **Open in Terminal** atau **Buka di Terminal**.
+4. Pastikan baris perintah menunjukkan folder aplikasi. Jika belum, jalankan:
+
+```powershell
+cd "D:\Projects\automation-tools\pdf-combiner-batch"
+```
+
+### 2. Pastikan Python tersedia
 
 ```powershell
 py --version
@@ -43,7 +54,12 @@ py --version
 Jika perintah `py` tidak tersedia, gunakan path Python yang dipasang IT,
 misalnya `D:\laragon\bin\python\python-3.13\python.exe`.
 
-### 2. Buat environment dan instal package
+### 3. Buat virtual environment (`.venv`) dan instal package
+
+`.venv` adalah folder Python khusus aplikasi ini. Instalasi ini cukup dilakukan
+satu kali pada setiap komputer, atau diulang bila folder `.venv` dihapus.
+
+Salin-tempel ketiga perintah berikut satu per satu ke PowerShell:
 
 ```powershell
 cd D:\Projects\automation-tools\pdf-combiner-batch
@@ -53,6 +69,13 @@ py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
+Jika `py -3.13` menampilkan pesan bahwa Python 3.13 tidak ditemukan, tetapi
+`py --version` berhasil, gunakan perintah ini sebagai gantinya:
+
+```powershell
+py -m venv .venv
+```
+
 Jika menggunakan Python Laragon:
 
 ```powershell
@@ -60,7 +83,7 @@ D:\laragon\bin\python\python-3.13\python.exe -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-### 3. Pasang dan cek Ghostscript
+### 4. Pasang dan cek Ghostscript
 
 ```powershell
 where gswin64c
@@ -75,7 +98,7 @@ C:\Program Files\gs\gs10.xx.x\bin\gswin64c.exe
 Tanpa Ghostscript aplikasi masih dapat memakai `pypdf`, tetapi hasil dapat
 lebih besar dan beberapa PDF tidak biasa lebih berisiko gagal.
 
-### 4. Verifikasi package Python
+### 5. Verifikasi package Python
 
 ```powershell
 .\.venv\Scripts\python.exe -c "import pypdf, openpyxl, PySide6; print('Instalasi OK')"
