@@ -39,6 +39,7 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -85,6 +86,39 @@ def _nat_key(s: str):
 def find_pdfs(root: Path) -> list[Path]:
     return sorted(p for p in root.rglob("*")
                   if p.is_file() and p.suffix.lower() == ".pdf")
+
+
+@dataclass(frozen=True)
+class InputSources:
+    """Sumber PDF dari folder induk lama atau dua folder langsung GUI."""
+
+    folders: tuple[tuple[str, Path], ...]
+
+    def files(self) -> list[Path]:
+        return sorted(pdf for _, folder in self.folders for pdf in find_pdfs(folder))
+
+    def source_name(self, path: Path) -> str:
+        for name, folder in self.folders:
+            try:
+                path.relative_to(folder)
+                return name
+            except ValueError:
+                continue
+        return "(tidak diketahui)"
+
+    def display_path(self, path: Path) -> str:
+        for name, folder in self.folders:
+            try:
+                return str(Path(name) / path.relative_to(folder))
+            except ValueError:
+                continue
+        return str(path)
+
+
+def sources_from_root(root: Path) -> InputSources:
+    """Mode CLI lama: setiap anak folder langsung menjadi sumber."""
+    folders = tuple((folder.name, folder) for folder in sorted(root.iterdir()) if folder.is_dir())
+    return InputSources(folders or ((root.name or "(root)", root),))
 
 
 def group_by_name(files: list[Path]) -> dict[str, list[Path]]:
@@ -220,37 +254,37 @@ def _save_check_cache(cache: dict) -> None:
         json.dump(cache, fh, indent=1)
 
 
-def _verify_one(p: Path, root: Path) -> dict:
+def _verify_one(p: Path, sources: InputSources) -> dict:
     """Cek nama file vs SEP yang ada di isi PDF.
 
     Status: ok | mismatch | no_sep (teks ada tapi tanpa pola SEP) |
     no_text (scan/tidak bisa dibaca).
     """
-    rel = os.path.relpath(p, root)
+    rel = sources.display_path(p)
     name_sep = p.stem
     try:
         text = "".join((pg.extract_text() or "") for pg in PdfReader(str(p)).pages)
     except Exception:
-        return {"file": rel, "nama_sep": name_sep, "isi_sep": "",
+        return {"file": rel, "path": str(p.resolve()), "nama_sep": name_sep, "isi_sep": "",
                 "status": "no_text", "keterangan": "tidak bisa dibaca"}
     if not text.strip():
-        return {"file": rel, "nama_sep": name_sep, "isi_sep": "",
+        return {"file": rel, "path": str(p.resolve()), "nama_sep": name_sep, "isi_sep": "",
                 "status": "no_text", "keterangan": "PDF scan tanpa lapisan teks"}
     found = {m.upper() for m in SEP_RE.findall(text)}
     if not found:
-        return {"file": rel, "nama_sep": name_sep, "isi_sep": "",
+        return {"file": rel, "path": str(p.resolve()), "nama_sep": name_sep, "isi_sep": "",
                 "status": "no_sep", "keterangan": "tidak ada pola SEP di isi"}
     if name_sep.upper() in found:
-        return {"file": rel, "nama_sep": name_sep, "isi_sep": name_sep.upper(),
+        return {"file": rel, "path": str(p.resolve()), "nama_sep": name_sep, "isi_sep": name_sep.upper(),
                 "status": "ok", "keterangan": ""}
-    return {"file": rel, "nama_sep": name_sep, "isi_sep": ", ".join(sorted(found)[:6]),
+    return {"file": rel, "path": str(p.resolve()), "nama_sep": name_sep, "isi_sep": ", ".join(sorted(found)[:6]),
             "status": "mismatch", "keterangan": "nama file != SEP di isi"}
 
 
-def verify_names(root: Path, force_verify: bool,
+def verify_names(sources: InputSources, force_verify: bool,
                  progress_callback: Callable[[str, int, int], None] | None = None) -> tuple[list[dict], dict]:
-    """Verifikasi SEMUA PDF di root; pakai cache (path,size,mtime) bila ada."""
-    files = find_pdfs(root)
+    """Verifikasi SEMUA PDF sumber; pakai cache (path,size,mtime) bila ada."""
+    files = sources.files()
     cache = {} if force_verify else _load_check_cache()
     rows: list[dict] = []
     counts = {"ok": 0, "mismatch": 0, "no_sep": 0, "no_text": 0, "cached": 0}
@@ -266,8 +300,9 @@ def verify_names(root: Path, force_verify: bool,
             row = entry["row"]
             counts["cached"] += 1
         else:
-            row = _verify_one(p, root)
+            row = _verify_one(p, sources)
             cache[key] = {"size": st.st_size, "mtime": st.st_mtime, "row": row}
+        row.setdefault("path", str(p.resolve()))
         rows.append(row)
         if row["status"] in counts:
             counts[row["status"]] += 1
@@ -285,7 +320,7 @@ def _write_check_csv(rows: list[dict], report_dir: Path) -> None:
     labels = {"file": "File", "nama_sep": "Nama File (SEP)",
               "isi_sep": "SEP di Isi", "status": "Status", "keterangan": "Keterangan"}
     with open(out, "w", encoding="utf-8-sig", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
         writer.writerow({k: labels[k] for k in fieldnames})
         writer.writerows(rows)
 
@@ -324,23 +359,22 @@ def _write_result(rows: list[dict], report_dir: Path) -> None:
             })
 
 
-def missing_report(root: Path) -> tuple[list[dict], dict]:
+def missing_report(sources: InputSources) -> tuple[list[dict], dict]:
     """Laporan nama file yang tidak lengkap antar folder sumber.
 
     Sumber = anak langsung folder input (mis. input/E-Klaim, input/Berkas
     Digital). Baris = nama yang tidak ada di SEMUA sumber, atau duplikat
     dalam satu sumber. Return (rows matriks, ringkasan).
     """
-    files = find_pdfs(root)
+    files = sources.files()
     if not files:
         return [], {}
-    sources = sorted({p.relative_to(root).parts[0] for p in files})
+    source_names = [name for name, _ in sources.folders]
     # nama(lower) -> {sumber: jumlah}
     groups: dict[str, dict[str, int]] = {}
     orig_name: dict[str, str] = {}
     for p in files:
-        parts = p.relative_to(root).parts
-        src = parts[0] if len(parts) > 1 else "(root)"
+        src = sources.source_name(p)
         key = p.name.lower()
         orig_name.setdefault(key, p.name)
         per = groups.setdefault(key, {})
@@ -350,12 +384,12 @@ def missing_report(root: Path) -> tuple[list[dict], dict]:
     for name in sorted(groups):
         per = groups[name]
         ada = {s for s, c in per.items() if c > 0}
-        missing = sorted(set(sources) - ada)
+        missing = sorted(set(source_names) - ada)
         dups = sorted((s, c) for s, c in per.items() if c > 1)
         if not missing and not dups:
             continue
         row = {"nosep": Path(orig_name[name]).stem, "nama_file": orig_name[name]}
-        for s in sources:
+        for s in source_names:
             row[s] = "ada" if s in ada else "TIDAK"
         ket = []
         if missing:
@@ -366,13 +400,12 @@ def missing_report(root: Path) -> tuple[list[dict], dict]:
         rows.append(row)
 
     ringkasan = {
-        "sumber": sources,
-        "per_sumber": {s: sum(1 for p in files
-                              if (p.relative_to(root).parts[0] if len(p.relative_to(root).parts) > 1 else "(root)") == s)
-                       for s in sources},
+        "sumber": source_names,
+        "per_sumber": {s: sum(1 for p in files if sources.source_name(p) == s)
+                       for s in source_names},
         "nama_union": len(groups),
         "lengkap": sum(1 for per in groups.values()
-                       if all(per.get(s, 0) == 1 for s in sources)),
+                       if all(per.get(s, 0) == 1 for s in source_names)),
         "bermasalah": len(rows),
     }
     return rows, ringkasan
@@ -462,14 +495,13 @@ def _write_xlsx(rows: list[dict], missing_rows: list[dict],
     log.info("Laporan Excel: %s", out)
 
 
-def _dedupe_per_source(paths: list[Path], root: Path) -> tuple[list[Path], list[str]]:
+def _dedupe_per_source(paths: list[Path], sources: InputSources) -> tuple[list[Path], list[str]]:
     """Bila dalam SATU folder sumber ada beberapa salinan nama sama:
     identik -> sisakan 1; beda isi -> pilih versi terbaru (mtime).
     Return (path terpilih, catatan log)."""
     per_source: dict[str, list[Path]] = {}
     for p in paths:
-        parts = p.relative_to(root).parts
-        src = parts[0] if len(parts) > 1 else "(root)"
+        src = sources.source_name(p)
         per_source.setdefault(src, []).append(p)
     chosen: list[Path] = []
     notes: list[str] = []
@@ -490,7 +522,7 @@ def _dedupe_per_source(paths: list[Path], root: Path) -> tuple[list[Path], list[
     return chosen, notes
 
 
-def process_group(name: str, paths: list[Path], root: Path, out_dir: Path,
+def process_group(name: str, paths: list[Path], sources: InputSources, out_dir: Path,
                   only_duplicates: bool, force: bool, engine: str) -> dict:
     orig_name = paths[0].name  # pertahankan case asli
     stem = Path(orig_name).stem
@@ -501,7 +533,7 @@ def process_group(name: str, paths: list[Path], root: Path, out_dir: Path,
         return {"name": orig_name, "status": "exists_skipped", "pages": 0,
                 "detail": "output sudah ada (pakai --force untuk menimpa)"}
 
-    paths, notes = _dedupe_per_source(paths, root)
+    paths, notes = _dedupe_per_source(paths, sources)
 
     if len(paths) == 1:
         if only_duplicates:
@@ -522,7 +554,7 @@ def process_group(name: str, paths: list[Path], root: Path, out_dir: Path,
 
     try:
         pages = merge_any(ordered, out_file, engine)
-        detail = " + ".join(p.parent.name for p in ordered)
+        detail = " + ".join(sources.source_name(p) for p in ordered)
         if notes:
             detail += " | " + "; ".join(notes)
         return {"name": orig_name, "status": "merged", "pages": pages,
@@ -539,6 +571,10 @@ def main(argv=None, progress_callback: Callable[[str, int, int], None] | None = 
     )
     p.add_argument("--input", default=str(PROJECT_DIR / "input"),
                    help="Folder sumber (dipindai rekursif)")
+    p.add_argument("--eklaim-dir",
+                   help="Folder E-Klaim untuk mode dua folder langsung")
+    p.add_argument("--berkas-digital-dir",
+                   help="Folder Berkas Digital untuk mode dua folder langsung")
     p.add_argument("--output", default=str(PROJECT_DIR / "result"),
                    help="Folder hasil")
     p.add_argument("--include-unique", action="store_true",
@@ -557,6 +593,22 @@ def main(argv=None, progress_callback: Callable[[str, int, int], None] | None = 
     p.add_argument("--force-verify", action="store_true",
                    help="Abaikan cache verifikasi (full re-check)")
     args = p.parse_args(argv)
+    direct_values = (args.eklaim_dir, args.berkas_digital_dir)
+    if any(direct_values) and not all(direct_values):
+        p.error("--eklaim-dir dan --berkas-digital-dir harus dipakai bersamaan")
+    if all(direct_values):
+        eklaim_dir = Path(args.eklaim_dir)
+        berkas_dir = Path(args.berkas_digital_dir)
+        if not eklaim_dir.is_dir() or not berkas_dir.is_dir():
+            p.error("Folder E-Klaim dan Berkas Digital harus tersedia")
+        if eklaim_dir.resolve() == berkas_dir.resolve():
+            p.error("Folder E-Klaim dan Berkas Digital tidak boleh sama")
+        sources = InputSources((("E-Klaim", eklaim_dir), ("Berkas Digital", berkas_dir)))
+    else:
+        root = Path(args.input)
+        if not root.is_dir():
+            p.error(f"Folder input tidak ditemukan: {root}")
+        sources = sources_from_root(root)
     report_dir = Path(args.output)
     global log
     log = _setup_logging(report_dir)
@@ -566,12 +618,12 @@ def main(argv=None, progress_callback: Callable[[str, int, int], None] | None = 
         if not HAS_PYPDF:
             log.error("Verifikasi nama file butuh pypdf (pip install pypdf).")
             return 2
-        root = Path(args.input)
+        root = sources.folders[0][1]
         if not root.is_dir():
             log.error("Folder input tidak ditemukan: %s", root)
             return 2
         log.info("CHECK MODE — verifikasi nama file vs NOSEP di isi (tanpa merge)")
-        rows, counts = verify_names(root, args.force_verify, progress_callback)
+        rows, counts = verify_names(sources, args.force_verify, progress_callback)
         _write_check_csv(rows, report_dir)
         log.info("Ringkasan: total=%s ok=%s mismatch=%s no_sep=%s no_text=%s "
                  "(dari cache=%s)", counts["total"], counts["ok"],
@@ -587,17 +639,17 @@ def main(argv=None, progress_callback: Callable[[str, int, int], None] | None = 
         if not HAS_PYPDF:
             log.error("Mode --safe butuh pypdf (pip install pypdf).")
             return 2
-        root = Path(args.input)
+        root = sources.folders[0][1]
         if not root.is_dir():
             log.error("Folder input tidak ditemukan: %s", root)
             return 2
         log.info("SAFE MODE — verifikasi nama file vs NOSEP, file mismatch dilewati")
-        rows, counts = verify_names(root, args.force_verify, progress_callback)
+        rows, counts = verify_names(sources, args.force_verify, progress_callback)
         _write_check_csv(rows, report_dir)
         log.info("Cek: total=%s ok=%s mismatch=%s no_sep=%s no_text=%s (cache=%s)",
                  counts["total"], counts["ok"], counts["mismatch"],
                  counts["no_sep"], counts["no_text"], counts["cached"])
-        blocked = {str((root / Path(r["file"])).resolve()).lower()
+        blocked = {r["path"].lower()
                    for r in rows if r["status"] == "mismatch"}
         if blocked:
             log.warning("SAFE MODE: %s file mismatch DILEWATI dari merge "
@@ -619,13 +671,9 @@ def main(argv=None, progress_callback: Callable[[str, int, int], None] | None = 
     if args.engine == "auto" and find_gs():
         log.info("Ghostscript terdeteksi — dipakai sebagai engine utama.")
 
-    root = Path(args.input)
-    if not root.is_dir():
-        log.error("Folder input tidak ditemukan: %s", root)
-        return 2
     out_dir = Path(args.output)
 
-    files = find_pdfs(root)
+    files = sources.files()
     if blocked:
         n_before = len(files)
         files = [p for p in files if str(p.resolve()).lower() not in blocked]
@@ -660,7 +708,7 @@ def main(argv=None, progress_callback: Callable[[str, int, int], None] | None = 
     for index, name in enumerate(sorted(groups), start=1):
         if progress_callback:
             progress_callback(f"Menggabungkan {index}/{total_groups}: {Path(name).stem}", index - 1, total_groups)
-        r = process_group(name, groups[name], root, out_dir,
+        r = process_group(name, groups[name], sources, out_dir,
                           only_dup, args.force, args.engine)
         rows.append(r)
         if r["status"] == "merged":
@@ -673,7 +721,7 @@ def main(argv=None, progress_callback: Callable[[str, int, int], None] | None = 
                  r["pages"] or "-", r["detail"])
 
     _write_result(rows, report_dir)
-    missing_rows, ringkasan = missing_report(root)
+    missing_rows, ringkasan = missing_report(sources)
     if ringkasan:
         _write_missing(missing_rows, ringkasan["sumber"], report_dir)
         log.info("Missing report: %s nama unik (%s lengkap, %s bermasalah) — "

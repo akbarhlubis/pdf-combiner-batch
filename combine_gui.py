@@ -38,7 +38,7 @@ class CombineWindow(QMainWindow):
         super().__init__()
         self.thread: QThread | None = None
         self.worker: CombineWorker | None = None
-        self.setWindowTitle("Gabung PDF E-Klaim dan Rekam Medis")
+        self.setWindowTitle("Gabung PDF E-Klaim dan Berkas Digital")
         self.setMinimumSize(820, 660)
         self.last_check_only = True
         self._build_ui()
@@ -46,16 +46,18 @@ class CombineWindow(QMainWindow):
     def _build_ui(self) -> None:
         root = QWidget()
         layout = QVBoxLayout(root)
-        title = QLabel("Gabung PDF E-Klaim dan Rekam Medis")
+        title = QLabel("Gabung PDF E-Klaim dan Berkas Digital")
         title.setObjectName("title")
         layout.addWidget(title)
-        layout.addWidget(QLabel("Folder input harus berisi subfolder sumber, misalnya E-Klaim dan Rekam Medis."))
+        layout.addWidget(QLabel("Pilih folder E-Klaim dan Berkas Digital yang akan dipasangkan berdasarkan nomor SEP."))
 
-        form_group = QGroupBox("1. Pilih Berkas")
+        form_group = QGroupBox("1. Pilih Folder Sumber")
         form = QFormLayout(form_group)
-        self.input_field = QLineEdit(str(Path(__file__).resolve().parent / "input"))
+        self.eklaim_field = QLineEdit()
+        self.berkas_digital_field = QLineEdit()
         self.output_field = QLineEdit(str(Path(__file__).resolve().parent / "result"))
-        form.addRow("Folder input", self._folder_row(self.input_field, "Pilih folder input"))
+        form.addRow("Folder E-Klaim", self._folder_row(self.eklaim_field, "Pilih folder E-Klaim"))
+        form.addRow("Folder Berkas Digital", self._folder_row(self.berkas_digital_field, "Pilih folder Berkas Digital"))
         form.addRow("Folder hasil/laporan", self._folder_row(self.output_field, "Pilih folder hasil"))
         layout.addWidget(form_group)
 
@@ -123,7 +125,9 @@ class CombineWindow(QMainWindow):
             field.setText(folder)
 
     def _arguments(self, check_only: bool) -> list[str]:
-        args = ["--input", self.input_field.text().strip(), "--output", self.output_field.text().strip(),
+        args = ["--eklaim-dir", self.eklaim_field.text().strip(),
+                "--berkas-digital-dir", self.berkas_digital_field.text().strip(),
+                "--output", self.output_field.text().strip(),
                 "--engine", self.engine.currentData()]
         if check_only:
             args.append("--check")
@@ -140,12 +144,13 @@ class CombineWindow(QMainWindow):
         return args
 
     def _start(self, check_only: bool) -> None:
-        input_dir = Path(self.input_field.text().strip())
-        if not input_dir.is_dir() or not self.output_field.text().strip():
-            QMessageBox.warning(self, "Input belum valid", "Pilih folder input dan hasil yang valid.")
+        eklaim_dir = Path(self.eklaim_field.text().strip())
+        berkas_dir = Path(self.berkas_digital_field.text().strip())
+        if not eklaim_dir.is_dir() or not berkas_dir.is_dir() or not self.output_field.text().strip():
+            QMessageBox.warning(self, "Input belum valid", "Pilih folder E-Klaim, Berkas Digital, dan hasil yang valid.")
             return
-        if len([item for item in input_dir.iterdir() if item.is_dir()]) < 2:
-            QMessageBox.warning(self, "Struktur input belum lengkap", "Folder input harus memiliki minimal dua subfolder sumber, misalnya E-Klaim dan Rekam Medis.")
+        if eklaim_dir.resolve() == berkas_dir.resolve():
+            QMessageBox.warning(self, "Folder sumber sama", "Folder E-Klaim dan Berkas Digital harus berbeda.")
             return
         self.last_check_only = check_only
         self.check_button.setEnabled(False)

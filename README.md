@@ -118,6 +118,25 @@ Atau dari PowerShell:
 .\.venv\Scripts\python.exe combine_gui.py
 ```
 
+GUI menggunakan mode utama **dua folder langsung**. Pilih folder E-Klaim,
+folder Berkas Digital, lalu folder hasil/laporan. Kedua folder boleh berada di
+lokasi yang berbeda; sumber hanya dibaca dan tidak disalin sebelum proses.
+
+## Dua folder langsung (CLI)
+
+Untuk memakai dua folder sumber yang terpisah dari command line:
+
+```powershell
+.\.venv\Scripts\python.exe combine.py `
+  --eklaim-dir "D:\Klaim\2026-07\E-Klaim" `
+  --berkas-digital-dir "D:\Rekam-Medis\2026-07" `
+  --output "D:\Hasil\2026-07" `
+  --safe --xlsx
+```
+
+Kedua folder harus berbeda. Laporan akan menandai sumber sebagai `E-Klaim`
+dan `Berkas Digital` agar daftar missing mudah ditelusuri.
+
 ## Cara pakai CLI
 
 ```powershell
